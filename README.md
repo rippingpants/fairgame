@@ -5,7 +5,7 @@
     * [Current Functionality](#Current-Functionality)  
 * [Installation](#Installation)
     * [Requirements](#Requirements)
-    * [Windows Quick Start](#Windows-Quick-Start)
+    * [Quick Start](#Quick-Start)
     * [Detailed Directions](#Detailed-Directions)
         * [Python](#Python)
         * [Downloading FairGame](#Downloading-FairGame)
@@ -20,7 +20,6 @@
     * [Notifications](#Notifications)
         * [Sounds](#Sounds)
         * [Apprise](#Apprise)
-        * [Pavlok](#Pavlok)
         * [Testing notifications](#Testing-notifications)
     * [CLI Tools](#CLI-Tools)
         * [CDN Endpoints](#CDN-Endpoints)
@@ -66,17 +65,20 @@ FairGame only works on Amazon and can automatically check out.
 
 ## Requirements
 
-***!!! YOU WILL NEED TO USE THE 3.8.5+ BRANCH OF PYTHON, ANY OTHER BRANCH/VERSION (Anaconda, 2.7, 3.9.x, 
+***!!! YOU WILL NEED TO USE THE 3.8 BRANCH OF PYTHON, ANY OTHER BRANCH/VERSION (Anaconda, 2.7, 3.9.x, 3.10, 4.0,
 toaster, etc.) BREAKS DEPENDENCIES !!!***
 
-It is best if you use the newest version (3.8.8) but 3.8.5, 3.8.6, and 3.8.7 should also work. 
+It is best if you use the newest version of **3.8** (at this time, 3.8.8) but 3.8.5, 3.8.6, and 3.8.7 should also work. 
 
 It also requires a working Chrome installation. 
 Running it on a potato (<2GB of RAM) is not suggested. 
 
-## Windows Quick Start
+## Quick Start
 
-Here are the very simple steps for running the bot on Windows:
+Here are the very simple steps for running the bot on Windows, however most of these instructions should be followed
+regardless of your OS (obviously you aren't running .bat files if you aren't on Windows, or using GitHub Desktop if not 
+available on your OS). See [Platform Specific](#Platform-Specific) instructions for help installing Python and
+dependencies in other operating systems:
 1. [Turn on your computer](https://www.google.com/search?q=how+do+I+turn+on+my+computer)
 2. Install Python 3.8.5, 3.8.6, 3.8.7 or 3.8.8. Install to some location that does not include spaces in the path 
    (we suggest C:\Python38). Click the checkbox that says Add Python 3.8 to PATH (or something similar) 
@@ -110,10 +112,16 @@ Here are the very simple steps for running the bot on Windows:
 8. Verify that the bot successfully makes it to the place your order page with the item you put in the config file. 
    If it does not, then:
    * You messed something up above, and need to fix it; or,
-   * It is asking you for your address and payment info. You need to make a purchase manually with the bot in a separate tab and verify that it correctly sets your defaults for the browser. See [#faq on our Discord](https://discord.gg/GEsarYKMAw).
-9. Edit the config file with what you want
-10. Remove `--test` from `_Amazon.bat`
-11. Run `_Amazon.bat` and wait
+   * It is asking you for your address and payment info. In a separate tab within the bots browser, you need to:
+     * Make sure one-click purchasing is set up for your account in the bot's browser, 
+     * verify there is a default payment method and default address associated with that payment method,
+     * And then make a purchase manually with the bot in a separate tab and verify that it correctly sets your 
+       defaults for the browser. 
+     * See [#faq on our Discord](https://discord.gg/GEsarYKMAw) for additional information.
+9. Edit the `amazon_config.json` file with the item(s) you want to look for. See [Configuration](#Configuration) 
+   and [Configuration Examples](#Configuration-Examples) for additional information
+11. Remove `--test` from `_Amazon.bat`
+12. Run `_Amazon.bat` and wait
 
 
 Additional information about running FairGame can be found in the rest of the documentation.
@@ -323,7 +331,6 @@ If you ever forget your encryption password, just delete this file and the next 
 An example of this will look like the following:
 
 ```shell
-python app.py amazon
 INFO Initializing Apprise handler
 INFO Initializing other notification handlers
 INFO Enabled Handlers: ['Audio']
@@ -339,7 +346,6 @@ INFO Credentials safely stored.
 Starting the bot when you have created an encrypted file:
 
 ```shell
-python app.py amazon --test
 INFO Initializing Apprise handler
 INFO Initializing other notification handlers
 INFO Enabled Handlers: ['Audio']
@@ -393,7 +399,7 @@ Type `pipenv shell` and hit enter.
 
 Type `pipenv install` and hit enter. 
 
-Type `python app.py amazon` and go through setup. You will also need to set up the config file, seen below in the Configuration section
+Type `pipenv run python app.py amazon` and go through setup. You will also need to set up the config file, seen below in the Configuration section
 
 #### Installation Ubuntu 20.10 (and probably other distros)
 
@@ -488,7 +494,7 @@ to
 
 Then save and close the file.
 
-Back in the terminal you kept open, under the fairgame folder you can now type `python app.py amazon` and run the bot, or add any flags after you wish to use like --headless or --delay x to make `python app.py amazon --headless --delay 4`
+Back in the terminal you kept open, under the fairgame folder you can now type `pipenv run python app.py amazon` and run the bot, or add any flags after you wish to use like `--headless` or `--delay x` to make `pipenv run python app.py amazon --headless --delay 4`
 
 # Advanced Configuration 
 ## Notifications
@@ -527,20 +533,6 @@ tgram://{bot_token}/{chat_id}/
 # Slack (https://github.com/caronc/apprise/wiki/Notify_slack)
 https://hooks.slack.com/services/{tokenA}/{tokenB}/{tokenC}
 
-```
-
-### Pavlok
-
-To enable shock notifications to
-your [Pavlok Shockwatch](https://www.amazon.com/Pavlok-PAV2-PERIMETER-BLACK-2/dp/B01N8VJX8P?), store the url from the
-pavlok app in the ```pavlok_config.json``` file, you can copy the template from ```pavlok_config.template_json```.
-
-**WARNING:** This feature does not currently support adjusting the intensity, it will always be max (255).
-
-```json
-{
-  "base_url": "url goes here"
-}
 ```
 
 ### Testing notifications
@@ -593,6 +585,7 @@ developers.
 
 # Issues Running FairGame 
 ## Known Issues
+* DO NOT change the zoom setting of the browser (it must be at 100%). Selenium doesn't work with the zoom at any other setting.
 * Pipenv does not like spaces in file paths, so you will either need to run from a place where you do not have spaces 
   in the file path, or set the option for pipenv to run locally in relation to the current file directory with:
 ```shell
@@ -654,5 +647,4 @@ answers. If you don't find it there, ask in #tech-support.
    option due to the smaller memory footprint. Still awaiting community feedback on running on a Pi 3. CPU and memory
    capacity seem to be the limiting factor for older Pi models. The Pi is also much slower then even a semi-recent
    (5 years or less) laptop. 
-
 
