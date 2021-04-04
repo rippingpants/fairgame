@@ -24,12 +24,16 @@ class AmazonItemCondition(Enum):
     CollectibleAcceptable = 70
     Open_box = 40
     OpenBoxLikeNew = 40
+    OpenBoxVeryGood = 50
+    OpenBoxGood = 60
+    OpenBoxAcceptable = 70
     UsedLikeNew = 40
     UsedVeryGood = 50
     UsedGood = 60
     UsedAcceptable = 70
     Used = 80
     Unknown = 1000
+    Any = 1001
 
     @classmethod
     def from_str(cls, label):
@@ -49,12 +53,13 @@ class AmazonItemCondition(Enum):
                 return condition
             except KeyError:
                 log.error(f"Found invalid Item Condition Key: '{label}'")
-                raise NotImplementedError
+                return AmazonItemCondition.Unknown
+                # raise NotImplementedError
 
 
 @attr.s(auto_attribs=True)
 class SellerDetail:
-    name: str
+    merchant_id: str
     price: Price
     shipping_cost: Price
     condition: int = AmazonItemCondition.New
@@ -76,6 +81,7 @@ class FGItem:
     furl: furl = None
     condition: AmazonItemCondition = AmazonItemCondition.New
     status_code: int = 200
+    merchant_id: str = "any"
 
 
 def get_merchant_names(tree):
@@ -260,6 +266,13 @@ def price_check(item, seller):
 
 def condition_check(item, seller):
     if item.condition.value >= seller.condition.value:
+        return True
+    else:
+        return False
+
+
+def merchant_check(item, seller):
+    if item.merchant_id.lower() == "any" or item.merchant_id == seller.merchant_id:
         return True
     else:
         return False

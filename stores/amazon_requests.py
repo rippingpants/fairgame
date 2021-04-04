@@ -9,6 +9,8 @@ import typing
 from contextlib import contextmanager
 from datetime import datetime
 
+import re
+
 import psutil
 import requests
 from amazoncaptcha import AmazonCaptcha
@@ -18,7 +20,6 @@ from lxml import html
 from price_parser import parse_price, Price
 from selenium import webdriver
 
-# from seleniumwire import webdriver
 from selenium.common.exceptions import (
     NoSuchElementException,
     TimeoutException,
@@ -39,6 +40,7 @@ from common.amazon_support import (
     price_check,
     SellerDetail,
     solve_captcha,
+    merchant_check,
 )
 from notifications.notifications import NotificationHandler
 from stores.basestore import BaseStoreHandler
@@ -136,6 +138,7 @@ class AmazonStoreHandler(BaseStoreHandler):
         super().__init__()
 
         self.shuffle = True
+        self.buy_it_now = True
 
         self.notification_handler = notification_handler
         self.check_shipping = checkshipping
@@ -170,15 +173,36 @@ class AmazonStoreHandler(BaseStoreHandler):
         set_options(prefs, slow_mode=slow_mode)
         modify_browser_profile()
 
-        # Initialize the Session we'll use for this run
-        self.session = requests.Session()
-        self.session.headers.update(HEADERS)
+        # Initialize the Session we'll use for stock checking
+        self.session_stock_check = requests.Session()
+        self.session_stock_check.headers.update(HEADERS)
         # self.conn = http.client.HTTPSConnection(self.amazon_domain)
         # self.conn20 = HTTP20Connection(self.amazon_domain)
+
+        # Initialize proxies for stock check session:
+        # self.proxies = [
+        #     {
+        #       'http': 'http://X.X.X.X:XXXX',
+        #       'https': 'http://X.X.X.X:XXXX',
+        #     },
+        #     {
+        #       'http': 'http://X.X.X.X:XXXX',
+        #       'https': 'http://X.X.X.X:XXXX',
+        #     },
+        # ]
+
+        self.proxies = []
+
+        if self.proxies:
+            self.session_stock_check.proxies.update(self.proxies[0])
 
         # Spawn the web browser
         self.driver = create_driver(options)
         self.webdriver_child_pids = get_webdriver_pids(self.driver)
+
+        # Initialize the checkout session
+        self.session_checkout = requests.Session()
+        self.session_checkout.headers.update(HEADERS)
 
     def __del__(self):
         message = f"Shutting down {STORE_NAME} Store Handler."
@@ -210,6 +234,27 @@ class AmazonStoreHandler(BaseStoreHandler):
             return False
         return True
 
+    def handle_startup(self):
+        time.sleep(3)
+        if self.is_logged_in():
+            log.info("Already logged in")
+        else:
+            log.info("Lets log in.")
+
+            is_smile = "smile" in AMAZON_URLS["BASE_URL"]
+            xpath = (
+                '//*[@id="ge-hello"]/div/span/a'
+                if is_smile
+                else '//*[@id="nav-link-accountList"]/div/span'
+            )
+
+            try:
+                self.driver.find_element_by_xpath(xpath).click()
+            except NoSuchElementException:
+                log.error("Log in button does not exist")
+            log.info("Wait for Sign In page")
+            time.sleep(3)
+
     def is_logged_in(self):
         try:
             text = self.driver.find_element_by_id("nav-link-accountList").text
@@ -225,21 +270,21 @@ class AmazonStoreHandler(BaseStoreHandler):
         remember_me: WebElement
         password_field: WebElement
 
-        # Look for a sign in link
-        try:
-            skip_link: WebElement = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located(
-                    (By.XPATH, "//a[contains(@href, '/ap/signin/')]")
-                )
-            )
-            skip_link.click()
-        except TimeoutException as e:
-            log.debug(
-                "Timed out waiting for signin link.  Unable to find matching "
-                "xpath for '//a[@data-nav-role='signin']'"
-            )
-            log.exception(e)
-            exit(1)
+        # # Look for a sign in link
+        # try:
+        #     skip_link: WebElement = WebDriverWait(self.driver, 10).until(
+        #         EC.presence_of_element_located(
+        #             (By.XPATH, "//a[contains(@href, '/ap/signin/')]")
+        #         )
+        #     )
+        #     skip_link.click()
+        # except TimeoutException as e:
+        #     log.debug(
+        #         "Timed out waiting for signin link.  Unable to find matching "
+        #         "xpath for '//a[@data-nav-role='signin']'"
+        #     )
+        #     log.exception(e)
+        #     exit(1)
 
         log.info("Inputting email...")
         try:
@@ -348,21 +393,16 @@ class AmazonStoreHandler(BaseStoreHandler):
         with self.wait_for_page_change():
             self.driver.get(f"https://{self.amazon_domain}")
 
+        self.handle_startup()
         # Get a valid amazon session for our requests
         if not self.is_logged_in():
             self.login()
 
-        # get cookies
-        self.amazon_cookies = self.driver.get_cookies()
-        # update session with cookies from Selenium
-        headers = {}
-        cookies = {c["name"]: c["value"] for c in self.amazon_cookies}
-        cookie_list = []
-        for cookie in cookies:
-            cookie_list.append(f"{cookie}={cookies[cookie]}")
-        cookie_header = "; ".join(cookie_list)
-        headers["cookie"] = cookie_header
-        self.session.headers.update(headers)
+        # Transfer cookies from selenium session.
+        # Do not transfer cookies to stock check if using proxies
+        if not self.proxies:
+            transfer_selenium_cookies(self.driver, self.session_stock_check)
+        transfer_selenium_cookies(self.driver, self.session_checkout)
 
         # Verify the configuration file
         if not self.verify():
@@ -382,7 +422,6 @@ class AmazonStoreHandler(BaseStoreHandler):
         self.save_screenshot("logged-in")
         print("\n\n")
         recurring_message = "The hunt continues! "
-        update_time = get_timeout(1)
         idx = 0
         spinner = ["-", "\\", "|", "/"]
         check_count = 1
@@ -395,7 +434,6 @@ class AmazonStoreHandler(BaseStoreHandler):
                     spinner[idx],
                     end="\r",
                 )
-                update_time = get_timeout(1)
                 check_count += 1
                 idx += 1
                 if idx == len(spinner):
@@ -408,7 +446,18 @@ class AmazonStoreHandler(BaseStoreHandler):
                     f"ASIN check for {item.id} took {time.time() - start_time} seconds."
                 )
                 if qualified_seller:
-                    if self.atc(qualified_seller=qualified_seller, item=item):
+                    if self.buy_it_now:
+                        pid, anti_csrf = self.turbo_initiate(
+                            qualified_seller=qualified_seller
+                        )
+                        if pid and anti_csrf:
+                            if self.turbo_checkout(pid=pid, anti_csrf=anti_csrf):
+                                if self.single_shot:
+                                    self.item_list.clear()
+                                else:
+                                    self.item_list.remove(item)
+
+                    elif self.atc(qualified_seller=qualified_seller, item=item):
                         r = self.ptc()
                         # with open("ptc-source.html", "w", encoding="utf-8") as f:
                         #     f.write(r)
@@ -416,7 +465,7 @@ class AmazonStoreHandler(BaseStoreHandler):
                             if test:
                                 print(
                                     "Proceeded to Checkout - Will not Place Order as this is a Test",
-                                    end="/r",
+                                    end="\r",
                                 )
                                 # in Test mode, clear the list
                                 self.item_list.clear()
@@ -487,14 +536,20 @@ class AmazonStoreHandler(BaseStoreHandler):
                     log.debug("Failed shipping hurdle.")
                     return
                 log.debug("Passed shipping hurdle.")
-                if not condition_check(item, seller):
+                if item.condition == AmazonItemCondition.Any:
+                    log.debug("Skipping condition check")
+                elif not condition_check(item, seller):
                     log.debug("Failed item condition hurdle.")
                     return
                 log.debug("Passed item condition hurdle.")
                 if not price_check(item, seller):
                     log.debug("Failed price condition hurdle.")
                     return
-                log.debug("Pass price condition hurdle.")
+                log.debug("Passed price condition hurdle.")
+                if not merchant_check(item, seller):
+                    log.debug("Failed merchant id condition hurdle.")
+                    return
+                log.debug("Passed merchant id condition hurdle.")
 
                 return seller
 
@@ -544,6 +599,11 @@ class AmazonStoreHandler(BaseStoreHandler):
                 else:
                     condition = AmazonItemCondition.New
 
+                if "merchant_id" in json_item:
+                    merchant_id = json_item["merchant_id"]
+                else:
+                    merchant_id = "any"
+
                 # Create new instances of an item for each asin specified
                 asins_collection = json_item["asins"]
                 if isinstance(asins_collection, str):
@@ -559,6 +619,7 @@ class AmazonStoreHandler(BaseStoreHandler):
                             min_price,
                             max_price,
                             condition=condition,
+                            merchant_id=merchant_id,
                         )
                     )
             else:
@@ -591,6 +652,7 @@ class AmazonStoreHandler(BaseStoreHandler):
                 cached_item.condition = item.condition
                 cached_item.min_price = item.min_price
                 cached_item.max_price = item.max_price
+                cached_item.merchant_id = item.merchant_id
                 self.item_list[idx] = cached_item
                 log.debug(
                     f"Verified ASIN {cached_item.id} as '{cached_item.short_name}'"
@@ -602,7 +664,7 @@ class AmazonStoreHandler(BaseStoreHandler):
             pdp_url = f"https://{self.amazon_domain}{PDP_PATH}{item.id}"
             log.debug(f"Verifying at {pdp_url} ...")
 
-            data, status = self.get_html(pdp_url)
+            data, status = self.get_html(pdp_url, s=self.session_stock_check)
             if status == 503:
                 # Check for CAPTCHA
                 tree = html.fromstring(data)
@@ -612,7 +674,7 @@ class AmazonStoreHandler(BaseStoreHandler):
                 if captcha_form_element:
                     # Solving captcha and resetting data
                     data, status = solve_captcha(
-                        self.session, captcha_form_element[0], pdp_url
+                        self.session_stock_check, captcha_form_element[0], pdp_url
                     )
 
             if status == 200:
@@ -624,7 +686,9 @@ class AmazonStoreHandler(BaseStoreHandler):
                     "//form[contains(@action,'validateCaptcha')]"
                 )
                 if captcha_form_element:
-                    data, status = solve_captcha(self.session, captcha_form_element[0], pdp_url)
+                    data, status = solve_captcha(
+                        self.session_stock_check, captcha_form_element[0], pdp_url
+                    )
                     if status != 200:
                         log.debug(f"ASIN {item.id} failed, skipping...")
                         continue
@@ -695,9 +759,7 @@ class AmazonStoreHandler(BaseStoreHandler):
                 log.info("captcha found")
                 url = f"https://{self.amazon_domain}/{REALTIME_INVENTORY_PATH}{item.id}"
                 # Solving captcha and resetting data
-                data, status = solve_captcha(
-                    self.session, captcha_form_element[0], url
-                )
+                data, status = solve_captcha(self.session, captcha_form_element[0], url)
                 if status != 503:
                     tree = html.fromstring(data)
                 else:
@@ -722,20 +784,33 @@ class AmazonStoreHandler(BaseStoreHandler):
             )
             return None
 
-        # Get the pinned offer, if it exists, by checking for a pinned offer area and add to cart button
-        pinned_offer = tree.xpath("//div[@id='aod-sticky-pinned-offer']")
-        if not pinned_offer or not tree.xpath(
-            "//div[@id='aod-sticky-pinned-offer']//input[@name='submit.addToCart']"
-        ):
-            log.debug(f"No pinned offer for {item.id} = {item.short_name}")
+        # Get all the offers (pinned and others)
+        offers = tree.xpath(
+            "//div[@id='aod-sticky-pinned-offer'] | //div[@id='aod-offer']"
+        )
+
+        # I don't really get the OR part of this, how could the first part fail, but the second part not fail?
+        # if not pinned_offer or not tree.xpath(
+        #     "//div[@id='aod-sticky-pinned-offer']//input[@name='submit.addToCart'] | //div[@id='aod-offer']//input[@name='submit.addToCart']"
+        # ):
+        #
+        if not offers:
+            log.debug(f"No offers for {item.id} = {item.short_name}")
         else:
-            for idx, offer in enumerate(pinned_offer):
-                merchant_name = offer.xpath(
-                    ".//span[@class='a-size-small a-color-base']"
-                )[0].text.strip()
-                price_text = offer.xpath(".//span[@class='a-price-whole']")[
-                    0
-                ].text.strip()
+            for idx, offer in enumerate(offers):
+                try:
+                    merchant_id = offer.xpath(".//input[@id='ftSelectMerchant']")[
+                        0
+                    ].value
+                except IndexError:
+                    merchant_id = None
+                try:
+                    price_text = offer.xpath(".//span[@class='a-price-whole']")[
+                        0
+                    ].text.strip()
+                except IndexError:
+                    log.debug("No price found for this offer, skipping")
+                    continue
                 price = parse_price(price_text)
                 shipping_cost = get_shipping_costs(offer, free_shipping_strings)
                 condition_heading = offer.xpath(".//div[@id='aod-offer-heading']/h5")
@@ -751,12 +826,13 @@ class AmazonStoreHandler(BaseStoreHandler):
                     offer_id = offers[0].value
                 else:
                     log.error("No offer ID found!")
-                atc_form = []
-                atc_form.append(offer.xpath(".//form[@method='post']")[0].action)
-                atc_form.append(offer.xpath(".//form//input"))
+                atc_form = [
+                    offer.xpath(".//form[@method='post']")[0].action,
+                    offer.xpath(".//form//input"),
+                ]
 
                 seller = SellerDetail(
-                    merchant_name,
+                    merchant_id,
                     price,
                     shipping_cost,
                     condition,
@@ -764,54 +840,48 @@ class AmazonStoreHandler(BaseStoreHandler):
                     atc_form=atc_form,
                 )
                 sellers.append(seller)
-
-        offers = tree.xpath("//div[@id='aod-offer']")
-        if not offers:
-            if sellers:
-                log.debug(f"Only found pinned offer for {item.id} = {item.short_name}")
-            else:
-                log.debug(f"No offers found for {item.id} = {item.short_name}")
-            return sellers
-        for idx, offer in enumerate(offers):
-            # This is preferred, but Amazon itself has unique URL parameters that I haven't identified yet
-            # merchant_name = offer.xpath(
-            #     ".//a[@target='_blank' and contains(@href, 'merch_name')]"
-            # )[0].text.strip()
-            merchant_name = offer.xpath(".//a[@target='_blank']")[0].text.strip()
-            price_text = offer.xpath(
-                ".//div[contains(@id, 'aod-price-')]//span[contains(@class,'a-offscreen')]"
-            )[0].text
-            price = parse_price(price_text)
-
-            shipping_cost = get_shipping_costs(offer, free_shipping_strings)
-            condition_heading = offer.xpath(".//div[@id='aod-offer-heading']/h5")
-            if condition_heading:
-                condition = AmazonItemCondition.from_str(
-                    condition_heading[0].text.strip()
-                )
-            else:
-                condition = AmazonItemCondition.Unknown
-            offers = offer.xpath(f".//input[@name='offeringID.1']")
-            offer_id = None
-            if len(offers) > 0:
-                offer_id = offers[0].value
-            else:
-                log.error("No offer ID found!")
-
-            atc_form = []
-            atc_form.append(offer.xpath(".//form[@method='post']")[0].action)
-            atc_form.append(offer.xpath(".//form//input"))
-
-            seller = SellerDetail(
-                merchant_name,
-                price,
-                shipping_cost,
-                condition,
-                offer_id,
-                atc_form=atc_form,
-            )
-            sellers.append(seller)
         return sellers
+
+    def turbo_initiate(self, qualified_seller):
+        url = f"https://{self.amazon_domain}/checkout/turbo-initiate?ref_=dp_start-bbf_1_glance_buyNow_2-1&pipelineType=turbo&weblab=RCX_CHECKOUT_TURBO_DESKTOP_NONPRIME_87784&temporaryAddToCart=1"
+        payload_inputs = {
+            "offerListing.1": qualified_seller.offering_id,
+            "quantity.1": "1",
+        }
+
+        r = self.session_checkout.post(url=url, data=payload_inputs)
+        if r.status_code == 200 and r.text:
+            log.debug("turbo-initiate successful")
+            find_pid = re.search(r"pid=(.*?)&amp;", r.text)
+            if find_pid:
+                pid = find_pid.group(1)
+            else:
+                pid = None
+            find_anti_csrf = re.search(r"'anti-csrftoken-a2z' value='(.*?)'", r.text)
+            if find_anti_csrf:
+                anti_csrf = find_anti_csrf.group(1)
+            else:
+                anti_csrf = None
+            return pid, anti_csrf
+        else:
+            log.debug("turbo-intiate unsuccessful")
+            with open("atc-failed-response.html", "w", encoding="utf-8") as f:
+                f.write(r.text)
+            return None, None
+
+    def turbo_checkout(self, pid, anti_csrf):
+        url = f"https://{self.amazon_domain}/checkout/spc/place-order?ref_=chk_spc_placeOrder&clientId=retailwebsite&pipelineType=turbo&pid={pid}"
+
+        header_update = {"anti-csrftoken-a2z": anti_csrf}
+        self.session_checkout.headers.update(header_update)
+        r = self.session_checkout.post(url=url)
+        if r.status_code == 200 or r.status_code == 500:
+            log.debug("Checkout maybe successful, check order page!")
+            # TODO: Implement GET request to confirm checkout
+            return True
+        else:
+            log.debug(f"Status Code: {r.status_code} was returned")
+            return False
 
     def atc(self, qualified_seller, item):
         post_action = qualified_seller.atc_form[0]
@@ -820,19 +890,23 @@ class AmazonStoreHandler(BaseStoreHandler):
             payload_inputs[payload_input.name] = payload_input.value
 
         payload_inputs.update({"submit.addToCart": "Submit"})
-        self.session.headers.update(
+        self.session_checkout.headers.update(
             {"referer": f"https://{self.amazon_domain}/gp/aod/ajax?asin={item.id}"}
         )
+        # payload_inputs = {
+        #     "offerListing.1": qualified_seller.offering_id,
+        #     "quantity.1": "1",
+        # }
 
         url = f"https://{self.amazon_domain}{post_action}"
         session_id = self.driver.get_cookie("session-id")
         payload_inputs["session-id"] = session_id["value"]
 
-        r = self.session.post(url=url, data=payload_inputs)
+        r = self.session_checkout.post(url=url, data=payload_inputs)
 
-        print(r.status_code)
-        with open("atc-response.html", "w") as f:
-            f.write(r.text)
+        # print(r.status_code)
+        # with open("atc-response.html", "w") as f:
+        #     f.write(r.text)
         if r.status_code == 200:
             log.info("ATC successful")
             return True
@@ -842,7 +916,7 @@ class AmazonStoreHandler(BaseStoreHandler):
 
     def ptc(self):
         url = f"https://{self.amazon_domain}/gp/cart/view.html/ref=lh_co_dup?ie=UTF8&proceedToCheckout.x=129"
-        r = self.session.get(url=url)
+        r = self.session_checkout.get(url=url)
 
         if r.status_code == 200:
             log.info("PTC successful")
@@ -927,7 +1001,7 @@ class AmazonStoreHandler(BaseStoreHandler):
                 pass
 
         url = f"https://{self.amazon_domain}/gp/buy/spc/handlers/static-submit-decoupled.html/ref=ox_spc_place_order?"
-        r = self.session.post(url=url, data=pyo_params)
+        r = self.session_checkout.post(url=url, data=pyo_params)
 
         if r.status_code == 200:
             return True
@@ -936,7 +1010,13 @@ class AmazonStoreHandler(BaseStoreHandler):
 
     def get_real_time_data(self, item):
         log.debug(f"Calling {STORE_NAME} for {item.short_name} using {item.furl.url}")
-        data, status = self.get_html(item.furl.url)
+        data, status = self.get_html(item.furl.url, s=self.session_stock_check)
+
+        # rotate proxy, if it is being utilized
+        if self.proxies:
+            self.proxies.append(self.proxies.pop[0])
+            self.session_stock_check.proxies.update(self.proxies[0])
+
         if item.status_code != status:
             # Track when we flip-flop between status codes.  200 -> 204 may be intelligent caching at Amazon.
             # We need to know if it ever goes back to a 200
@@ -984,12 +1064,12 @@ class AmazonStoreHandler(BaseStoreHandler):
             with self.wait_for_page_content_change():
                 self.driver.refresh()
 
-    def get_html(self, url):
+    def get_html(self, url, s: requests.Session):
         """Unified mechanism to get content to make changing connection clients easier"""
         f = furl(url)
         if not f.scheme:
             f.set(scheme="https")
-        response = self.session.get(f.url)
+        response = s.get(f.url)
         return response.text, response.status_code
 
     # returns negative number if cart element does not exist, returns number if cart exists
@@ -1261,3 +1341,17 @@ def get_timestamp_filename(name, extension):
         return name + "_" + date + extension
     else:
         return name + "_" + date + "." + extension
+
+
+def transfer_selenium_cookies(d: webdriver.Chrome, s: requests.Session):
+    # get cookies, might use these for checkout later, with no cookies on
+    # cookie_names = ["session-id", "ubid-main", "x-main", "at-main", "sess-at-main"]
+    # for c in self.driver.get_cookies():
+    #     if c["name"] in cookie_names:
+    #         self.amazon_cookies[c["name"]] = c["value"]
+
+    # update session with cookies from Selenium
+    cookie_names = ["session-id", "ubid-main", "x-main", "at-main", "sess-at-main"]
+    for c in d.get_cookies():
+        if c["name"] in cookie_names:
+            s.cookies.set(name=c["name"], value=c["value"])
