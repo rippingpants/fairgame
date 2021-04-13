@@ -67,12 +67,9 @@ def notify_on_crash(func):
             func(*args, **kwargs)
         except KeyboardInterrupt:
             pass
-        else:
+        except Exception as e:
+            log.debug(e)
             notification_handler.send_notification(f"FairGame has crashed.")
-            try:
-                raise
-            except RuntimeError:
-                pass
 
     return decorator
 
@@ -311,6 +308,24 @@ def amazon(
     default=False,
     help="Wait if captcha could not be solved. Only occurs if enters captcha handler during checkout.",
 )
+@click.option(
+    "--offerid",
+    type=str,
+    default=None,
+    help="Pass in offer id and run offer id code. USE AT YOUR OWN RISK.",
+)
+@click.option(
+    "--all-cookies",
+    is_flag=True,
+    default=False,
+    help="Pulls all the cookies from selenium, rather than targeted ones. May help with login issues?",
+)
+@click.option(
+    "--transfer-headers",
+    is_flag=True,
+    default=False,
+    help="Transfers headers from selenium session",
+)
 @notify_on_crash
 def amazonrequests(
     headless,
@@ -329,6 +344,9 @@ def amazonrequests(
     clean_profile,
     clean_credentials,
     captcha_wait,
+    offerid,
+    all_cookies,
+    transfer_headers,
 ):
     log.warning(
         "Experimental test balloon.  Do not attempt to use.  Your computer could catch fire."
@@ -364,11 +382,16 @@ def amazonrequests(
         log_stock_check=log_stock_check,
         shipping_bypass=shipping_bypass,
         wait_on_captcha_fail=captcha_wait,
+        transfer_headers=transfer_headers,
     )
 
     try:
-
-        amazon_requests_obj.run(delay=delay, test=test)
+        if offerid:
+            amazon_requests_obj.run_offer_id(
+                offerid=offerid, delay=delay, all_cookies=all_cookies
+            )
+        else:
+            amazon_requests_obj.run(delay=delay, test=test, all_cookies=all_cookies)
     except RuntimeError:
         del amazon_requests_obj
         log.error("Exiting Program...")
@@ -523,6 +546,11 @@ def show_traceroutes(domain):
         log.info(f" {trace_command}{endpoint}")
 
 
+@click.command()
+def test_logging():
+    log.dev("This is a test of the dev log level")
+
+
 # Register Signal Handler for Interrupt
 signal(SIGINT, interrupt_handler)
 
@@ -532,6 +560,7 @@ main.add_command(test_notifications)
 main.add_command(show)
 main.add_command(find_endpoints)
 main.add_command(show_traceroutes)
+main.add_command(test_logging)
 
 # Global scope stuff here
 if is_latest():
